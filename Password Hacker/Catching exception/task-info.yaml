@@ -1,0 +1,744 @@
+type: edu
+custom_name: stage4
+files:
+- name: tests.py
+  visible: false
+  text: |
+    from hstest.stage_test import StageTest
+    from hstest.test_case import TestCase
+    from hstest.check_result import CheckResult
+    from threading import Thread
+    from time import sleep
+    import socket
+    import random
+    import json
+
+    CheckResult.correct = lambda: CheckResult(True, '')
+    CheckResult.wrong = lambda feedback: CheckResult(False, feedback)
+
+    abc = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
+
+    logins_list = [
+        'admin', 'Admin', 'admin1', 'admin2', 'admin3',
+        'user1', 'user2', 'root', 'default', 'new_user',
+        'some_user', 'new_admin', 'administrator',
+        'Administrator', 'superuser', 'super', 'su', 'alex',
+        'suser', 'rootuser', 'adminadmin', 'useruser',
+        'superadmin', 'username', 'username1'
+    ]
+
+
+    def logins():
+        for login in logins_list:
+            yield login
+
+
+    def random_password():
+        '''function - generating random password of length from 6 to 10'''
+        return ''.join(random.choice(abc) for i in range(random.randint(6, 10)))
+
+
+    def random_login():
+        return random.choice(list(logins()))
+
+
+    class Hacking(StageTest):
+
+        def __init__(self, module):
+            super().__init__(module)
+            self.ready = False
+            self.sock = None
+            self.serv = None
+            self.connected = False
+            self.message = []
+            self.password = None
+            self.login = None
+
+        def start_server(self):
+            self.serv = Thread(target=lambda: self.server())
+            self.serv.start()
+            self.ready = False
+            while not self.ready:
+                try:
+                    sleep(0.1)  # socket needs to be set up before test
+                except KeyboardInterrupt:
+                    pass
+
+        def stop_server(self):
+            self.sock.close()
+            self.serv.join()
+
+        def server(self):
+            '''function - creating a server and answering clients'''
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.bind(('localhost', 9090))
+            self.ready = True
+            try:
+                self.sock.listen(1)
+                conn, addr = self.sock.accept()
+                self.connected = True
+                conn.settimeout(15)
+                while True:
+                    data = conn.recv(1024)
+                    self.message.append(data.decode('utf8'))
+                    if len(self.message) > 1_000_000:
+                        conn.send(
+                            json.dumps({
+                                'result': 'Too many attempts to connect!'
+                            }).encode('utf8'))
+                        break
+                    if not data:
+                        break
+
+                    try:
+                        login_ = json.loads(data.decode('utf8'))['login']
+                        password_ = json.loads(data.decode('utf8'))['password']
+                    except:
+                        conn.send(json.dumps({'result': 'Bad request!'}).encode('utf8'))
+                        continue
+
+                    if login_ == self.login:
+                        if self.password == password_:
+                            conn.send(
+                                json.dumps({
+                                    'result': 'Connection success!'
+                                }).encode('utf8'))
+                            break
+                        elif self.password.startswith(password_):
+                            conn.send(
+                                json.dumps({
+                                    'result': 'Exception happened during login'
+                                }).encode('utf8'))
+                        else:
+                            conn.send(
+                                json.dumps({
+                                    'result': 'Wrong password!'
+                                }).encode('utf8'))
+                    else:
+                        conn.send(json.dumps({'result': 'Wrong login!'}).encode('utf8'))
+                conn.close()
+            except:
+                pass
+
+        def generate(self):
+            self.message = []
+            self.password = random_password()
+            self.login = random_login()
+            self.start_server()
+            return [
+                TestCase(
+                    args=['localhost', '9090'],
+                    attach=[self.password, self.login]
+                )
+            ]
+
+        def check(self, reply, attach):
+            self.stop_server()
+
+            if not self.connected:
+                return CheckResult.wrong("You didn't connect to the server")
+
+            real_password, real_login = attach
+            try:
+                json_reply = json.loads(reply)
+            except:
+                return CheckResult.wrong(
+                    'The output of your program is not a valid JSON:\n' + reply
+                )
+            try:
+                password = json_reply['password']
+            except KeyError:
+                return CheckResult.wrong(
+                    'The output of your program did not contain the field "password":\n' + reply
+                )
+            except TypeError:
+                return CheckResult.wrong(
+                    'The output of your program did not contain the field "password":\n' + reply
+                )
+            try:
+                login = json_reply['login']
+            except KeyError:
+                return CheckResult.wrong(
+                    'The output of your program did not contain the field "login":\n' + reply
+                )
+            except TypeError:
+                return CheckResult.wrong(
+                    'The output of your program did not contain the field "login":\n' + reply
+                )
+            if login != real_login:
+                return CheckResult.wrong('The login you printed is not correct')
+            elif password != real_password:
+                return CheckResult.wrong('The password you printed is not correct')
+            find_first_letter = False
+            for i in self.message:
+                log = json.loads(i)['login']
+                pas = json.loads(i)['password']
+                if find_first_letter is False and len(
+                        pas
+                ) == 1 and log == real_login and real_password.startswith(pas):
+                    find_first_letter = True
+                if find_first_letter is True:
+                    if log != real_login:
+                        return CheckResult.wrong(
+                            'You should find a correct login and then use only it')
+                    if pas[0] != real_password[0]:
+                        return CheckResult.wrong(
+                            'When you find a first letter you should then start your passwords with it'
+                        )
+                if len(pas) > 1:
+                    if pas[0:-1] != real_password[0:len(pas[0:-1]) - 1]:
+                        return CheckResult.wrong(
+                            'You have already found the first %d letters of the password. Use them as a beginning'
+                            % len(pas[0:-1]))
+                return CheckResult.correct()
+
+
+    if __name__ == '__main__':
+        test = Hacking('hacking.hack')
+        test.run_tests()
+        test.stop_server()
+  learner_created: false
+- name: hacking/nw.py
+  visible: true
+  text: |
+    password_list=[]
+    f=open("passwords.txt","r")
+    fn=open("new","w")
+    fnr=open("new","r")
+    for x in f:
+           password_list.append(x)
+    print(password_list)
+    passwords=['123456\n', 'password\n', '12345678\n', 'qwerty\n', '123456789\n', '12345\n', '1234\n', '111111\n', '1234567\n', 'dragon\n', '123123\n', 'baseball\n', 'abc123\n', 'football\n', 'monkey\n', 'letmein\n', '696969\n', 'shadow\n', 'master\n', '666666\n', 'qwertyuiop\n', '123321\n', 'mustang\n', '1234567890\n', 'michael\n', '654321\n', 'pussy\n', 'superman\n', '1qaz2wsx\n', '7777777\n', '121212\n', '000000\n', 'qazwsx\n', '123qwe\n', 'killer\n', 'trustno1\n', 'jordan\n', 'jennifer\n', 'zxcvbnm\n', 'asdfgh\n', 'hunter\n', 'buster\n', 'soccer\n', 'harley\n', 'batman\n', 'andrew\n', 'tigger\n', 'sunshine\n', 'iloveyou\n', '2000\n', 'charlie\n', 'robert\n', 'thomas\n', 'hockey\n', 'ranger\n', 'daniel\n', 'starwars\n', 'klaster\n', '112233\n', 'george\n', 'computer\n', 'michelle\n', 'jessica\n', 'pepper\n', '1111\n', 'zxcvbn\n', '555555\n', '11111111\n', '131313\n', 'freedom\n', '777777\n', 'pass\n', 'maggie\n', '159753\n', 'aaaaaa\n', 'ginger\n', 'princess\n', 'joshua\n', 'cheese\n', 'amanda\n', 'summer\n', 'love\n', 'ashley\n', '6969\n', 'nicole\n', 'chelsea\n', 'biteme\n', 'matthew\n', 'access\n', 'yankees\n', '987654321\n', 'dallas\n', 'austin\n', 'thunder\n', 'taylor\n', 'matrix\n', 'william\n', 'corvette\n', 'hello\n', 'martin\n', 'heather\n', 'secret\n', 'merlin\n', 'diamond\n', '1234qwer\n', 'gfhjkm\n', 'hammer\n', 'silver\n', '222222\n', '88888888\n', 'anthony\n', 'justin\n', 'test\n', 'bailey\n', 'q1w2e3r4t5\n', 'patrick\n', 'internet\n', 'scooter\n', 'orange\n', '11111\n', 'golfer\n', 'cookie\n', 'richard\n', 'samantha\n', 'bigdog\n', 'guitar\n', 'jackson\n', 'whatever\n', 'mickey\n', 'chicken\n', 'sparky\n', 'snoopy\n', 'maverick\n', 'phoenix\n', 'camaro\n', 'peanut\n', 'morgan\n', 'welcome\n', 'falcon\n', 'cowboy\n', 'ferrari\n', 'samsung\n', 'andrea\n', 'smokey\n', 'steelers\n', 'joseph\n', 'mercedes\n', 'dakota\n', 'arsenal\n', 'eagles\n', 'melissa\n', 'boomer\n', 'booboo\n', 'spider\n', 'nascar\n', 'monster\n', 'tigers\n', 'yellow\n', 'xxxxxx\n', '123123123\n', 'gateway\n', 'marina\n', 'diablo\n', 'bulldog\n', 'qwer1234\n', 'compaq\n', 'purple\n', 'hardcore\n', 'banana\n', 'junior\n', 'hannah\n', '123654\n', 'porsche\n', 'lakers\n', 'iceman\n', 'money\n', 'cowboys\n', '987654\n', 'london\n', 'tennis\n', '999999\n', 'ncc1701\n', 'coffee\n', 'scooby\n', '0000\n', 'miller\n', 'boston\n', 'q1w2e3r4\n', 'brandon\n', 'yamaha\n', 'chester\n', 'mother\n', 'forever\n', 'johnny\n', 'edward\n', '333333\n', 'oliver\n', 'redsox\n', 'player\n', 'nikita\n', 'knight\n', 'fender\n', 'barney\n', 'midnight\n', 'please\n', 'brandy\n', 'chicago\n', 'badboy\n', 'slayer\n', 'rangers\n', 'charles\n', 'angel\n', 'flower\n', 'rabbit\n', 'wizard\n', 'bigdick\n', 'jasper\n', 'enter\n', 'rachel\n', 'chris\n', 'steven\n', 'winner\n', 'adidas\n', 'victoria\n', 'natasha\n', '1q2w3e4r\n', 'jasmine\n', 'winter\n', 'prince\n', 'panties\n', 'marine\n', 'ghbdtn\n', 'fishing\n', 'cocacola\n', 'casper\n', 'james\n', '232323\n', 'raiders\n', '888888\n', 'marlboro\n', 'gandalf\n', 'asdfasdf\n', 'crystal\n', '87654321\n', '12344321\n', 'golden\n', '8675309\n', 'panther\n', 'lauren\n', 'angela\n', 'thx1138\n', 'angels\n', 'madison\n', 'winston\n', 'shannon\n', 'mike\n', 'toyota\n', 'jordan23\n', 'canada\n', 'sophie\n', 'Password\n', 'apples\n', 'tiger\n', 'razz\n', '123abc\n', 'pokemon\n', 'qazxsw\n', '55555\n', 'qwaszx\n', 'muffin\n', 'johnson\n', 'murphy\n', 'cooper\n', 'jonathan\n', 'liverpoo\n', 'david\n', 'danielle\n', '159357\n', 'jackie\n', '1990\n', '123456a\n', '789456\n', 'turtle\n', 'abcd1234\n', 'scorpion\n', 'qazwsxedc\n', '101010\n', 'butter\n', 'carlos\n', 'password1\n', 'dennis\n', 'slipknot\n', 'qwerty123\n', 'asdf\n', '1991\n', 'black\n', 'startrek\n', '12341234\n', 'cameron\n', 'newyork\n', 'rainbow\n', 'nathan\n', 'john\n', '1992\n', 'rocket\n', 'viking\n', 'redskins\n', 'asdfghjkl\n', '1212\n', 'sierra\n', 'peaches\n', 'gemini\n', 'doctor\n', 'wilson\n', 'sandra\n', 'helpme\n', 'qwertyui\n', 'victor\n', 'florida\n', 'dolphin\n', 'pookie\n', 'captain\n', 'tucker\n', 'blue\n', 'liverpool\n', 'theman\n', 'bandit\n', 'dolphins\n', 'maddog\n', 'packers\n', 'jaguar\n', 'lovers\n', 'nicholas\n', 'united\n', 'tiffany\n', 'maxwell\n', 'zzzzzz\n', 'nirvana\n', 'jeremy\n', 'monica\n', 'elephant\n', 'giants\n', 'hotdog\n', 'rosebud\n', 'success\n', 'debbie\n', 'mountain\n', '444444\n', 'xxxxxxxx\n', 'warrior\n', '1q2w3e4r5t\n', 'q1w2e3\n', '123456q\n', 'albert\n', 'metallic\n', 'lucky\n', 'azerty\n', '7777\n', 'alex\n', 'bond007\n', 'alexis\n', '1111111\n', 'samson\n', '5150\n', 'willie\n', 'scorpio\n', 'bonnie\n', 'gators\n', 'benjamin\n', 'voodoo\n', 'driver\n', 'dexter\n', '2112\n', 'jason\n', 'calvin\n', 'freddy\n', '212121\n', 'creative\n', '12345a\n', 'sydney\n', 'rush2112\n', '1989\n', 'asdfghjk\n', 'red123\n', 'bubba\n', '4815162342\n', 'passw0rd\n', 'trouble\n', 'gunner\n', 'happy\n', 'gordon\n', 'legend\n', 'jessie\n', 'stella\n', 'qwert\n', 'eminem\n', 'arthur\n', 'apple\n', 'nissan\n', 'bear\n', 'america\n', '1qazxsw2\n', 'nothing\n', 'parker\n', '4444\n', 'rebecca\n', 'qweqwe\n', 'garfield\n', '01012011\n', 'beavis\n', '69696969\n', 'jack\n', 'asdasd\n', 'december\n', '2222\n', '102030\n', '252525\n', '11223344\n', 'magic\n', 'apollo\n', 'skippy\n', '315475\n', 'girls\n', 'kitten\n', 'golf\n', 'copper\n', 'braves\n', 'shelby\n', 'godzilla\n', 'beaver\n', 'fred\n', 'tomcat\n', 'august\n', 'buddy\n', 'airborne\n', '1993\n', '1988\n', 'lifehack\n', 'qqqqqq\n', 'brooklyn\n', 'animal\n', 'platinum\n', 'phantom\n', 'online\n', 'xavier\n', 'darkness\n', 'blink182\n', 'power\n', 'fish\n', 'green\n', '789456123\n', 'voyager\n', 'police\n', 'travis\n', '12qwaszx\n', 'heaven\n', 'snowball\n', 'lover\n', 'abcdef\n', '00000\n', 'pakistan\n', '007007\n', 'walter\n', 'playboy\n', 'blazer\n', 'cricket\n', 'sniper\n', 'donkey\n', 'willow\n', 'loveme\n', 'saturn\n', 'therock\n', 'redwings\n', 'bigboy\n', 'pumpkin\n', 'trinity\n', 'williams\n', 'nintendo\n', 'digital\n', 'destiny\n', 'topgun\n', 'runner\n', 'marvin\n', 'guinness\n', 'chance\n', 'bubbles\n', 'testing\n', 'fire\n', 'november\n', 'minecraft\n', 'asdf1234\n', 'lasvegas\n', 'sergey\n', 'broncos\n', 'cartman\n', 'private\n', 'celtic\n', 'birdie\n', 'little\n', 'cassie\n', 'babygirl\n', 'donald\n', 'beatles\n', '1313\n', 'family\n', '12121212\n', 'school\n', 'louise\n', 'gabriel\n', 'eclipse\n', 'fluffy\n', '147258369\n', 'lol123\n', 'explorer\n', 'beer\n', 'nelson\n', 'flyers\n', 'spencer\n', 'scott\n', 'lovely\n', 'gibson\n', 'doggie\n', 'cherry\n', 'andrey\n', 'snickers\n', 'buffalo\n', 'pantera\n', 'metallica\n', 'member\n', 'carter\n', 'qwertyu\n', 'peter\n', 'alexande\n', 'steve\n', 'bronco\n', 'paradise\n', 'goober\n', '5555\n', 'samuel\n', 'montana\n', 'mexico\n', 'dreams\n', 'michigan\n', 'carolina\n', 'friends\n', 'magnum\n', 'surfer\n', 'maximus\n', 'genius\n', 'cool\n', 'vampire\n', 'lacrosse\n', 'asd123\n', 'aaaa\n', 'christin\n', 'kimberly\n', 'speedy\n', 'sharon\n', 'carmen\n', '111222\n', 'kristina\n', 'sammy\n', 'racing\n', 'ou812\n', 'sabrina\n', 'horses\n', '0987654321\n', 'qwerty1\n', 'baby\n', 'stalker\n', 'enigma\n', '147147\n', 'star\n', 'poohbear\n', '147258\n', 'simple\n', '12345q\n', 'marcus\n', 'brian\n', '1987\n', 'qweasdzxc\n', 'drowssap\n', 'hahaha\n', 'caroline\n', 'barbara\n', 'dave\n', 'viper\n', 'drummer\n', 'action\n', 'einstein\n', 'genesis\n', 'hello1\n', 'scotty\n', 'friend\n', 'forest\n', '010203\n', 'hotrod\n', 'google\n', 'vanessa\n', 'spitfire\n', 'badger\n', 'maryjane\n', 'friday\n', 'alaska\n', '1232323q\n', 'tester\n', 'jester\n', 'jake\n', 'champion\n', 'billy\n', '147852\n', 'rock\n', 'hawaii\n', 'chevy\n', '420420\n', 'walker\n', 'stephen\n', 'eagle1\n', 'bill\n', '1986\n', 'october\n', 'gregory\n', 'svetlana\n', 'pamela\n', '1984\n', 'music\n', 'shorty\n', 'westside\n', 'stanley\n', 'diesel\n', 'courtney\n', '242424\n', 'kevin\n', 'hitman\n', 'mark\n', '12345qwert\n', 'reddog\n', 'frank\n', 'qwe123\n', 'popcorn\n', 'patricia\n', 'aaaaaaaa\n', '1969\n', 'teresa\n', 'mozart\n', 'buddha\n', 'anderson\n', 'paul\n', 'melanie\n', 'abcdefg\n', 'security\n', 'lucky1\n', 'lizard\n', 'denise\n', '3333\n', 'a12345\n', '123789\n', 'ruslan\n', 'stargate\n', 'simpsons\n', 'scarface\n', 'eagle\n', '123456789a\n', 'thumper\n', 'olivia\n', 'naruto\n', '1234554321\n', 'general\n', 'cherokee\n', 'a123456\n', 'vincent\n', 'Usuckballz1\n', 'spooky\n', 'qweasd\n', 'free\n', 'frankie\n', 'douglas\n', 'death\n', '1980\n', 'loveyou\n', 'kitty\n', 'kelly\n', 'veronica\n', 'suzuki\n', 'semperfi\n', 'penguin\n', 'mercury\n', 'liberty\n', 'spirit\n', 'scotland\n', 'natalie\n', 'marley\n', 'vikings\n', 'system\n', 'king\n', 'allison\n', 'marshall\n', '1979\n', '098765\n', 'qwerty12\n', 'hummer\n', 'adrian\n', '1985\n', 'vfhbyf\n', 'sandman\n', 'rocky\n', 'leslie\n', 'antonio\n', '98765432\n', '4321\n', 'softball\n', 'passion\n', 'mnbvcxz\n', 'passport\n', 'rascal\n', 'howard\n', 'franklin\n', 'bigred\n', 'alexander\n', 'homer\n', 'redrum\n', 'jupiter\n', 'claudia\n', '55555555\n', '141414\n', 'zaq12wsx\n', 'patches\n', 'raider\n', 'infinity\n', 'andre\n', '54321\n', 'galore\n', 'college\n', 'russia\n', 'kawasaki\n', 'bishop\n', '77777777\n', 'vladimir\n', 'money1\n', 'freeuser\n', 'wildcats\n', 'francis\n', 'disney\n', 'budlight\n', 'brittany\n', '1994\n', '00000000\n', 'sweet\n', 'oksana\n', 'honda\n', 'domino\n', 'bulldogs\n', 'brutus\n', 'swordfis\n', 'norman\n', 'monday\n', 'jimmy\n', 'ironman\n', 'ford\n', 'fantasy\n', '9999\n', '7654321\n', 'PASSWORD\n', 'duncan\n', '1977\n', 'jeffrey\n', 'house\n', 'dancer\n', 'brooke\n', 'timothy\n', 'super\n', 'marines\n', 'justice\n', 'digger\n', 'connor\n', 'patriots\n', 'karina\n', '202020\n', 'molly\n', 'everton\n', 'tinker\n', 'alicia\n', 'rasdzv3\n', 'poop\n', 'pearljam\n', 'stinky\n', 'colorado\n', '123123a\n', 'water\n', 'test123\n', 'ncc1701d\n', 'motorola\n', 'ireland\n', 'asdfg\n', 'matt\n', 'houston\n', 'boogie\n', 'zombie\n', 'accord\n', 'vision\n', 'bradley\n', 'reggie\n', 'kermit\n', 'froggy\n', 'ducati\n', 'avalon\n', '6666\n', '9379992\n', 'sarah\n', 'saints\n', 'logitech\n', 'chopper\n', '852456\n', 'simpson\n', 'madonna\n', 'juventus\n', 'claire\n', '159951\n', 'zachary\n', 'yfnfif\n', 'wolverin\n', 'warcraft\n', 'hello123\n', 'extreme\n', 'peekaboo\n', 'fireman\n', 'eugene\n', 'brenda\n', '123654789\n', 'russell\n', 'panthers\n', 'georgia\n', 'smith\n', 'skyline\n', 'jesus\n', 'elizabet\n', 'spiderma\n', 'smooth\n', 'pirate\n', 'empire\n', 'bullet\n', '8888\n', 'virginia\n', 'valentin\n', 'psycho\n', 'predator\n', 'arizona\n', '134679\n', 'mitchell\n', 'alyssa\n', 'vegeta\n', 'titanic\n', 'christ\n', 'goblue\n', 'fylhtq\n', 'wolf\n', 'mmmmmm\n', 'kirill\n', 'indian\n', 'hiphop\n', 'baxter\n', 'awesome\n', 'people\n', 'danger\n', 'roland\n', 'mookie\n', '741852963\n', '1111111111\n', 'dreamer\n', 'bambam\n', 'arnold\n', '1981\n', 'skipper\n', 'serega\n', 'rolltide\n', 'elvis\n', 'changeme\n', 'simon\n', '1q2w3e\n', 'lovelove\n', 'fktrcfylh\n', 'denver\n', 'tommy\n', 'mine\n', 'loverboy\n', 'hobbes\n', 'happy1\n', 'alison\n', 'nemesis\n', 'chevelle\n', 'cardinal\n', 'burton\n', 'picard\n', '151515\n', 'tweety\n', 'michael1\n', '147852369\n', '12312\n', 'xxxx\n', 'windows\n', 'turkey\n', '456789\n', '1974\n', 'vfrcbv\n', 'sublime\n', '1975\n', 'galina\n', 'bobby\n', 'newport\n', 'manutd\n', 'american\n', 'alexandr\n', '1966\n', 'victory\n', 'rooster\n', 'qqq111\n', 'madmax\n', 'electric\n', 'a1b2c3\n', 'wolfpack\n', 'spring\n', 'phpbb\n', 'lalala\n', 'spiderman\n', 'eric\n', 'darkside\n', 'classic\n', 'raptor\n', '123456789q\n', 'hendrix\n', '1982\n', 'wombat\n', 'avatar\n', 'alpha\n', 'zxc123\n', 'crazy\n', 'hard\n', 'england\n', 'brazil\n', '1978\n', '01011980\n', 'wildcat\n', 'polina\n', 'freepass\n', 'lauragpe\n', 'the0toky\n', 'redhead\n', 'woody\n', 'snowman\n', 'tiger1\n', 'stingray\n', 'kristen\n', 'jerry\n', '789455\n', 'garcia\n', 'lights\n', 'chronic\n', 'alison77\n', 'service\n', 'service1\n', 'srinivas\n', 'katie\n', 'brother\n', 'single\n', 'cannon\n', '11georgia\n', 'tattoo\n', 'texas\n', 'party\n', 'taurus\n', 'wolves\n', 'flowers\n', 'tarheels\n', 'fisher\n', 'testtest\n', 'mature\n', 'bass\n', 'brass\n', 'catch22\n', 'juice\n', 'alpha1\n', 'hawkeye\n', 'machine\n', 'pyramid\n', 'vegetaaa\n', 'katana\n', 'moose\n', 'tinkerr\n', 'coyote\n', 'inside\n', 'pepsi\n', 'letmein1\n', 'control\n', 'maiden\n', 'quan\n', 'nong\n', 'neng\n', 'buttons\n', 'biao\n', 'xuan']
+  learner_created: true
+- name: hacking/hack.py
+  visible: true
+  text: '# write your code here'
+  learner_created: false
+- name: hacking/logins.txt
+  visible: true
+  learner_created: true
+feedback_link: https://hyperskill.org/projects/80/stages/445/implement
+status: Failed
+feedback:
+  message: |-
+    Wrong answer in test #1
+
+    The output of your program is not a valid JSON:
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Connection success!'}
+    {
+     "login": "useruser",
+     "password": "XkW5sfc"
+    }
+
+    Please find below the output of your program during this failed test.
+
+    ---
+
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Exception happened during login'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Wrong password!'}
+    {'result': 'Connection success!'}
+    {
+     "login": "useruser",
+     "password": "XkW5sfc"
+    }
+  time: Thu, 10 Sep 2020 11:04:19 UTC
+record: 4
